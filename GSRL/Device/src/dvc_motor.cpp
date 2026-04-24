@@ -534,23 +534,53 @@ uint8_t MotorGM6020::getDjiMotorID() const
 
 /**
  * @brief 合并两个同控制ID的大疆电机CAN控制数据, 同时触发双方掉线检测
- * @param otherMotor 另一个同控制ID的大疆电机
+ * @param m2 另一个同控制ID的大疆电机
  * @return const uint8_t* 合并后的8字节CAN控制数据
  * @note 返回的指针指向内部静态缓冲区, 下次调用会覆盖
  */
-const uint8_t *MotorGM6020::getMergedControlData(MotorGM6020 &otherMotor)
+const uint8_t *MotorGM6020::getMergedControlData(MotorGM6020 &m2)
 {
-    const uint8_t *selfData  = this->getMotorControlData();
-    const uint8_t *otherData = otherMotor.getMotorControlData();
+    const uint8_t *selfData = this->getMotorControlData();
+    const uint8_t *m2Data   = m2.getMotorControlData();
 
-    if (m_motorControlMessageID != otherMotor.m_motorControlMessageID) {
-        return selfData;
-    }
-
+    // 始终以 self 作为基线, 保证 m_mergedData 永远 "至少包含 self",
+    // 使 3/4-motor 重载的叠加链在任一 ID 不匹配时仍然正确
     memcpy(m_mergedData, selfData, 8);
-    uint8_t offset           = (uint8_t)(((otherMotor.m_djiMotorID - 1) & 0x3) * 2);
-    m_mergedData[offset]     = otherData[offset];
-    m_mergedData[offset + 1] = otherData[offset + 1];
+    if (m_motorControlMessageID == m2.m_motorControlMessageID) {
+        for (uint8_t i = 0; i < 8; ++i) m_mergedData[i] |= m2Data[i];
+    }
+    return m_mergedData;
+}
+
+/**
+ * @brief 合并三个同控制ID的大疆电机CAN控制数据, 同时触发各方掉线检测
+ * @return const uint8_t* 合并后的8字节CAN控制数据
+ * @note 返回的指针指向内部静态缓冲区, 下次调用会覆盖
+ */
+const uint8_t *MotorGM6020::getMergedControlData(MotorGM6020 &m2, MotorGM6020 &m3)
+{
+    getMergedControlData(m2); // m_mergedData = self | m2
+
+    const uint8_t *m3Data = m3.getMotorControlData();
+    if (m_motorControlMessageID == m3.m_motorControlMessageID) {
+        for (uint8_t i = 0; i < 8; ++i) m_mergedData[i] |= m3Data[i];
+    }
+    return m_mergedData;
+}
+
+/**
+ * @brief 合并四个同控制ID的大疆电机CAN控制数据, 同时触发各方掉线检测
+ * @return const uint8_t* 合并后的8字节CAN控制数据
+ * @note 返回的指针指向内部静态缓冲区, 下次调用会覆盖
+ */
+const uint8_t *MotorGM6020::getMergedControlData(MotorGM6020 &m2, MotorGM6020 &m3, MotorGM6020 &m4)
+{
+    getMergedControlData(m2, m3); // m_mergedData = self | m2 | m3
+
+    const uint8_t *m4Data = m4.getMotorControlData();
+    if (m_motorControlMessageID == m4.m_motorControlMessageID) {
+        for (uint8_t i = 0; i < 8; ++i) m_mergedData[i] |= m4Data[i];
+    }
     return m_mergedData;
 }
 
@@ -713,16 +743,13 @@ void MotorDM4310::setMotorZeroPosition()
  * | 控制ID |             0x3FE             |             0x4FE             |
  */
 MotorDMmulti::MotorDMmulti(uint8_t dmMotorID, Controller *controller, uint16_t encoderOffset)
-    : Motor(dmMotorID <= 4 ? 0x3FE : 0x4FE,
-            0x300u + dmMotorID,
-            controller,
-            encoderOffset),
-      m_dmMotorID(dmMotorID),
-      m_currentRPMSpeed(0),
+    : MotorGM6020(dmMotorID, controller, encoderOffset),
       m_errorState(0)
 {
-    m_encoderHistory[0] = 0;
-    m_encoderHistory[1] = 0;
+    // 调用GM6020构造函数后修正为达妙一控四固件的发送和接收ID
+    m_motorControlMessageID    = dmMotorID <= 4 ? 0x3FE : 0x4FE;
+    m_motorFeedbackMessageID   = 0x300u + dmMotorID;
+    m_motorControlHeader.StdId = m_motorControlMessageID;
 }
 
 /**
@@ -732,7 +759,7 @@ MotorDMmulti::MotorDMmulti(uint8_t dmMotorID, Controller *controller, uint16_t e
 void MotorDMmulti::convertControllerOutputToMotorControlData()
 {
     int16_t giveControlValue       = (int16_t)m_controllerOutput; // 控制电流标幺值
-    uint8_t offset                 = (uint8_t)(((m_dmMotorID - 1) & 0x3) * 2);
+    uint8_t offset                 = (uint8_t)(((m_djiMotorID - 1) & 0x3) * 2);
     m_motorControlData[offset]     = (uint8_t)(giveControlValue & 0xFF);        // 低 8 位
     m_motorControlData[offset + 1] = (uint8_t)((giveControlValue >> 8) & 0xFF); // 高 8 位
 }
@@ -769,7 +796,7 @@ bool MotorDMmulti::decodeCanRxMessage(const can_rx_message_t &rxMessage)
  */
 uint8_t MotorDMmulti::getDmMotorID() const
 {
-    return m_dmMotorID;
+    return m_djiMotorID;
 }
 
 /**
@@ -779,28 +806,6 @@ uint8_t MotorDMmulti::getDmMotorID() const
 uint8_t MotorDMmulti::getErrorState() const
 {
     return m_errorState;
-}
-
-/**
- * @brief 合并两个同控制ID的一控四固件达妙电机CAN控制数据, 同时触发双方掉线检测
- * @param otherMotor 另一个同控制ID的达妙一控四电机
- * @return const uint8_t* 合并后的8字节CAN控制数据
- * @note 返回的指针指向内部静态缓冲区, 下次调用会覆盖
- */
-const uint8_t *MotorDMmulti::getMergedControlData(MotorDMmulti &otherMotor)
-{
-    const uint8_t *selfData  = this->getMotorControlData();
-    const uint8_t *otherData = otherMotor.getMotorControlData();
-
-    if (m_motorControlMessageID != otherMotor.m_motorControlMessageID) {
-        return selfData;
-    }
-
-    memcpy(m_mergedData, selfData, 8);
-    uint8_t offset           = (uint8_t)(((otherMotor.m_dmMotorID - 1) & 0x3) * 2);
-    m_mergedData[offset]     = otherData[offset];
-    m_mergedData[offset + 1] = otherData[offset + 1];
-    return m_mergedData;
 }
 
 /******************************************************************************

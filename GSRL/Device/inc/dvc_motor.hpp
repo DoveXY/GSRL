@@ -123,7 +123,9 @@ protected:
 public:
     MotorGM6020(uint8_t dji6020MotorID, Controller *controller, uint16_t encoderOffset = 0);
     uint8_t getDjiMotorID() const;
-    const uint8_t *getMergedControlData(MotorGM6020 &otherMotor);
+    const uint8_t *getMergedControlData(MotorGM6020 &m2);
+    const uint8_t *getMergedControlData(MotorGM6020 &m2, MotorGM6020 &m3);
+    const uint8_t *getMergedControlData(MotorGM6020 &m2, MotorGM6020 &m3, MotorGM6020 &m4);
 
 protected:
     bool decodeCanRxMessage(const can_rx_message_t &rxMessage) override;
@@ -209,20 +211,15 @@ using MotorDM2325 = MotorDM4310;
  * @note 反馈帧: 反馈ID = 0x300 + 电机ID, 数据段为大端字节序
  * @note 控制电流为标幺值，含义参见达妙力位混控模式中的 i_des 说明
  */
-class MotorDMmulti : public Motor
+class MotorDMmulti : public MotorGM6020
 {
 protected:
-    uint8_t m_dmMotorID;          // 达妙电机ID [1,8]
-    uint16_t m_encoderHistory[2]; // 0:当前值 1:上一次值
-    int16_t m_currentRPMSpeed;    // 电机速度, 单位RPM(已除以100后的真实值)
-    uint8_t m_errorState;         // 反馈帧D[7]错误状态字节, 具体含义详见达妙错误状态说明书
-    uint8_t m_mergedData[8];      // getMergedControlData 输出缓冲区
+    uint8_t m_errorState; // 反馈帧D[7]错误状态字节, 具体含义详见达妙错误状态说明书
 
 public:
     MotorDMmulti(uint8_t dmMotorID, Controller *controller, uint16_t encoderOffset = 0);
     uint8_t getDmMotorID() const;
     uint8_t getErrorState() const;
-    const uint8_t *getMergedControlData(MotorDMmulti &otherMotor);
 
 protected:
     bool decodeCanRxMessage(const can_rx_message_t &rxMessage) override;
